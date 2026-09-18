@@ -162,10 +162,21 @@
   textarea{min-height:110px; font-family:'IBM Plex Mono',monospace; font-size:13px;}
   small.hint{display:block; color:var(--ink-soft); font-size:12px; margin-top:4px;}
 
-  .qr-grid{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:14px;}
+  .qr-grid{ display:grid; grid-template-columns:1fr 1fr; gap:18px; margin-top:14px;}
   .qr-cell{
-    background:#fff; border:1px solid var(--line); border-radius:8px;
-    text-align:center; padding:10px 6px;
+    position:relative;
+    background:#fff;
+    border-radius:10px;
+    text-align:center;
+    padding:14px 8px 10px;
+    border:5px solid transparent;
+    border-image: repeating-linear-gradient(45deg, #2B1810 0 8px, #F5A028 8px 16px) 5;
+  }
+  .qr-cell .bee-icon{
+    position:absolute; top:-16px; right:-14px;
+    width:32px; height:32px;
+    background:#fff; border-radius:50%;
+    padding:3px; box-shadow:0 1px 3px rgba(0,0,0,.25);
   }
   .qr-cell canvas, .qr-cell img{ display:block; margin:0 auto 6px;}
   .qr-cell .qname{font-weight:600; font-size:12px;}
@@ -669,6 +680,36 @@ stationIdInput.addEventListener('change', ()=>{
 /* ---------- QR generation ---------- */
 document.getElementById('btnGenerateQr').addEventListener('click', generateQrGrid);
 document.getElementById('btnPrintQr').addEventListener('click', ()=>window.print());
+function stampAlzBadge(qrHolder){
+  const canvas = qrHolder.querySelector('canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  const boxW = w * 0.38, boxH = h * 0.24;
+  const x = (w - boxW) / 2, y = (h - boxH) / 2;
+  const r = 6;
+
+  ctx.fillStyle = '#FFFFFF';
+  ctx.strokeStyle = '#2B1810';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + boxW, y, x + boxW, y + boxH, r);
+  ctx.arcTo(x + boxW, y + boxH, x, y + boxH, r);
+  ctx.arcTo(x, y + boxH, x, y, r);
+  ctx.arcTo(x, y, x + boxW, y, r);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = '#2B1810';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold ' + Math.round(boxH * 0.36) + 'px IBM Plex Sans, sans-serif';
+  ctx.fillText('ALZ', w / 2, h / 2 - boxH * 0.16);
+  ctx.font = 'bold ' + Math.round(boxH * 0.36) + 'px IBM Plex Sans, sans-serif';
+  ctx.fillText('WALK', w / 2, h / 2 + boxH * 0.2);
+}
 function generateQrGrid(){
   const raw = document.getElementById('itemInput').value.trim();
   const grid = document.getElementById('qrGrid');
@@ -685,6 +726,13 @@ function generateQrGrid(){
 
     const cell = document.createElement('div');
     cell.className = 'qr-cell';
+    cell.innerHTML = `<svg class="bee-icon" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+      <ellipse cx="16" cy="18" rx="7" ry="9" fill="#F5A028"/>
+      <path d="M9 12h14M9 16h14M9 20h14" stroke="#2B1810" stroke-width="2.2"/>
+      <circle cx="16" cy="8" r="4" fill="#2B1810"/>
+      <ellipse cx="8" cy="10" rx="5" ry="3" fill="#FFFFFF" stroke="#2B1810" stroke-width="1" transform="rotate(-25 8 10)"/>
+      <ellipse cx="24" cy="10" rx="5" ry="3" fill="#FFFFFF" stroke="#2B1810" stroke-width="1" transform="rotate(25 24 10)"/>
+    </svg>`;
     const qrHolder = document.createElement('div');
     cell.appendChild(qrHolder);
     const label = document.createElement('div');
@@ -692,7 +740,8 @@ function generateQrGrid(){
     cell.appendChild(label);
     grid.appendChild(cell);
 
-    new QRCode(qrHolder, { text: payload, width: 240, height: 240, correctLevel: QRCode.CorrectLevel.M });
+    new QRCode(qrHolder, { text: payload, width: 240, height: 240, correctLevel: QRCode.CorrectLevel.H });
+    stampAlzBadge(qrHolder);
   });
 }
 
