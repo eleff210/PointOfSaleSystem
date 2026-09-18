@@ -289,6 +289,16 @@ Plant Cutting, 6.00</textarea>
 <div class="toast" id="toast"></div>
 
 <script>
+/* ---------- Config ---------- */
+/* Paste your Google Apps Script Web App URL here so every device has it by default.
+   Anyone can still override it per-device in the Settings tab, which takes priority
+   over this value without changing this file. */
+const DEFAULT_SCRIPT_URL = "PASTE_YOUR_DEPLOYED_WEB_APP_URL_HERE";
+function getScriptUrl(){
+  const override = localStorage.getItem('posScriptUrl');
+  return (override && override.trim()) ? override.trim() : DEFAULT_SCRIPT_URL;
+}
+
 /* ---------- State ---------- */
 let cart = [];
 let scanning = false;
@@ -521,8 +531,8 @@ document.getElementById('btnEmailCsv').addEventListener('click', ()=>{
   if (getLocalLog().length===0){ toast('No sales to export yet'); return; }
   const email = emailInput.value.trim();
   if (!email || !email.includes('@')){ toast('Enter a valid email address first'); return; }
-  const url = localStorage.getItem('posScriptUrl');
-  if (!url){ toast('Add your Google Sheet script URL first'); return; }
+  const url = getScriptUrl();
+  if (!url || url === "PASTE_YOUR_DEPLOYED_WEB_APP_URL_HERE"){ toast('Add your Google Sheet script URL first'); return; }
   localStorage.setItem('posEmailAddress', email);
   const csv = buildCsvString();
   fetch(url, {
@@ -545,9 +555,9 @@ armDangerButton(
 
 /* ---------- Google Sheet sync ---------- */
 function sendToSheet(record){
-  const url = localStorage.getItem('posScriptUrl');
+  const url = getScriptUrl();
   const statusEl = document.getElementById('syncStatus');
-  if (!url){
+  if (!url || url === "PASTE_YOUR_DEPLOYED_WEB_APP_URL_HERE"){
     toast('No Google Sheet connected \u2014 saved locally only');
     return;
   }
@@ -567,11 +577,24 @@ function sendToSheet(record){
 /* ---------- Settings persistence ---------- */
 const scriptUrlInput = document.getElementById('scriptUrl');
 scriptUrlInput.value = localStorage.getItem('posScriptUrl') || '';
+scriptUrlInput.placeholder = (DEFAULT_SCRIPT_URL !== "PASTE_YOUR_DEPLOYED_WEB_APP_URL_HERE")
+  ? 'Leave blank to use the built-in sheet'
+  : 'https://script.google.com/macros/s/AKfycb.../exec';
+function refreshSyncStatusLabel(){
+  const hasDefault = DEFAULT_SCRIPT_URL !== "PASTE_YOUR_DEPLOYED_WEB_APP_URL_HERE";
+  const hasOverride = !!localStorage.getItem('posScriptUrl');
+  const el = document.getElementById('syncStatus');
+  if (hasOverride){
+    el.innerHTML = '<span class="status-dot dot-ok"></span>Connected (custom sheet)';
+  } else if (hasDefault){
+    el.innerHTML = '<span class="status-dot dot-ok"></span>Connected (default sheet)';
+  } else {
+    el.innerHTML = '<span class="status-dot dot-off"></span>Not connected';
+  }
+}
 scriptUrlInput.addEventListener('change', ()=>{
   localStorage.setItem('posScriptUrl', scriptUrlInput.value.trim());
-  const dot = scriptUrlInput.value.trim() ? 'dot-ok' : 'dot-off';
-  const label = scriptUrlInput.value.trim() ? 'Connected' : 'Not connected';
-  document.getElementById('syncStatus').innerHTML = '<span class="status-dot '+dot+'"></span>'+label;
+  refreshSyncStatusLabel();
   toast('Settings saved');
 });
 
@@ -617,9 +640,7 @@ function generateQrGrid(){
 
 /* ---------- Init ---------- */
 refreshBackupCount();
-if (localStorage.getItem('posScriptUrl')){
-  document.getElementById('syncStatus').innerHTML = '<span class="status-dot dot-ok"></span>Connected';
-}
+refreshSyncStatusLabel();
 generateQrGrid();
 renderCart();
 </script>
