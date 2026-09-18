@@ -178,7 +178,7 @@
   @media print{
     header, nav, .no-print{display:none !important;}
     body{background:#fff;}
-    .qr-grid{grid-template-columns:repeat(3,1fr);}
+    .qr-grid{grid-template-columns:repeat(2,1fr);}
   }
 </style>
 </head>
@@ -238,7 +238,7 @@
 
   <!-- PRINT QR CODES -->
   <section id="view-print" class="view">
-    <div class="card">
+    <div class="card no-print">
       <p style="margin-top:0; font-size:13px; color:var(--ink-soft);">
         Enter one item per line as <span class="mono">Name, Price</span>. These are the real items pre-loaded so you can use them right away &mdash; add additional items manually as needed.
       </p>
@@ -259,7 +259,7 @@ Keychains, 5.00
 Rock Art, 15.00
 Wool Mittens, 25.00</textarea>
       <button id="btnGenerateQr" class="btn btn-primary" style="margin-top:10px;">Generate QR Codes</button>
-      <button id="btnPrintQr" class="btn btn-outline no-print">Print This Page</button>
+      <button id="btnPrintQr" class="btn btn-outline">Print This Page</button>
     </div>
     <div class="qr-grid" id="qrGrid"></div>
   </section>
@@ -271,8 +271,9 @@ Wool Mittens, 25.00</textarea>
       <p id="syncStatus" class="mono" style="font-size:13px;"><span class="status-dot dot-off"></span>Not connected</p>
 
       <label>Google Apps Script Web App URL</label>
-      <input id="scriptUrl" type="url" placeholder="https://script.google.com/macros/s/AKfycb.../exec">
-      <small class="hint">See setup instructions in chat. Paste the URL you get after deploying the script, then it saves automatically.</small>
+      <input id="scriptUrl" type="url">
+      <small class="hint">See setup instructions in chat. Leave blank to use the built-in sheet, or paste a different URL to override it, then it saves automatically.</small>
+      <button id="btnTestConnection" class="btn btn-outline" style="margin-top:10px;">Test Connection</button>
 
       <label>Next invoice number</label>
       <input id="nextInvoice" type="number" min="1">
@@ -302,655 +303,7 @@ Wool Mittens, 25.00</textarea>
 /* Paste your Google Apps Script Web App URL here so every device has it by default.
    Anyone can still override it per-device in the Settings tab, which takes priority
    over this value without changing this file. */
-const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzrmwc188VyuJXcFRWFSYOAgdofwCoLyauUrVuQ1vQev6yuRxTth5x-_cSrn3yLQeb3/exechttps://script.google.com/macros/s/AKfycbzrmwc188VyuJXcFRWFSYOAgdofwCoLyauUrVuQ1vQev6yuRxTth5x-_cSrn3yLQeb3/exec";
-function getScriptUrl(){
-  const override = localStorage.getItem('posScriptUrl');
-  return (override && override.trim()) ? override.trim() : DEFAULT_SCRIPT_URL;
-}
-
-/* ---------- State ---------- */
-let cart = [];
-let scanning = false;
-let html5QrCode = null;
-let lastScan = { code: null, time: 0 };
-
-/* ---------- Helpers ---------- */
-function toast(msg, ms=2200){
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.classList.add('show');
-  clearTimeout(t._timer);
-  t._timer = setTimeout(()=>t.classList.remove('show'), ms);
-}
-function money(n){ return '$' + Number(n).toFixed(2); }
-function beep(){
-  try{
-    const ctx = new (window.AudioContext||window.webkitAudioContext)();
-    const o = ctx.createOscillator(); const g = ctx.createGain();
-    o.type='sine'; o.frequency.value=880;
-    o.connect(g); g.connect(ctx.destination);
-    g.gain.setValueAtTime(0.15, ctx.currentTime);
-    o.start(); o.stop(ctx.currentTime + 0.1);
-  }catch(e){}
-  if (navigator.vibrate) navigator.vibrate(80);
-}
-
-/* ---------- Navigation ---------- */
-document.querySelectorAll('nav button').forEach(btn=>{
-  btn.addEventListener('click', ()=>{
-    document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
-    document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
-    btn.classList.add('active');
-    document.getElementById('view-'+btn.dataset.view).classList.add('active');
-    if (btn.dataset.view !== 'scan' && scanning) stopScanner();
-  });
-});
-
-/* ---------- Cart ---------- */
-function addToCart(sku, name, price){
-  const existing = cart.find(i=>i.sku===sku);
-  if (existing){ existing.qty += 1; }
-  else { cart.push({sku, name, price:Number(price), qty:1}); }
-  renderCart();
-  beep();
-  toast('Added: ' + name + ' (' + money(price) + ')');
-}
-function removeFromCart(idx){
-  cart.splice(idx,1);
-  renderCart();
-}
-function renderCart(){
-  const list = document.getElementById('cartList');
-  const totalEl = document.getElementById('cartTotal');
-  if (cart.length === 0){
-    list.innerHTML = '<div class="empty-note">Scan an item to begin</div>';
-  } else {
-    list.innerHTML = cart.map((i,idx)=>`
-      <div class="line-item">
-        <div>
-          <div class="name">${i.name}</div>
-          <div class="meta">${i.sku} &middot; qty ${i.qty} &times; ${money(i.price)}</div>
-        </div>
-        <div style="display:flex;align-items:center;">
-          <span class="price">${money(i.price*i.qty)}</span>
-          <button class="rm" onclick="removeFromCart(${idx})">&times;</button>
-        </div>
-      </div>
-    `).join('');
-  }
-  const total = cart.reduce((s,i)=>s+i.price*i.qty,0);
-  totalEl.textContent = money(total);
-  document.getElementById('btnCheckout').disabled = cart.length===0;
-  document.getElementById('btnClearCart').disabled = cart.length===0;
-}
-function armDangerButton(btn, idleLabel, confirmLabel, onConfirm){
-  let armed = false;
-  let timer = null;
-  btn.textContent = idleLabel;
-  btn.addEventListener('click', ()=>{
-    if (!armed){
-      armed = true;
-      btn.textContent = confirmLabel;
-      timer = setTimeout(()=>{ armed = false; btn.textContent = idleLabel; }, 3000);
-    } else {
-      clearTimeout(timer);
-      armed = false;
-      btn.textContent = idleLabel;
-      onConfirm();
-    }
-  });
-}
-armDangerButton(
-  document.getElementById('btnClearCart'),
-  'Clear Current Sale',
-  'Tap again to confirm',
-  ()=>{ cart = []; renderCart(); toast('Current sale cleared'); }
-);
-
-/* Manual add item modal (avoids native prompt(), which some mobile in-app browsers block) */
-const manualModal = document.getElementById('manualModal');
-document.getElementById('btnAddManual').addEventListener('click', ()=>{
-  document.getElementById('manualName').value = '';
-  document.getElementById('manualPrice').value = '';
-  manualModal.style.display = 'flex';
-  document.getElementById('manualName').focus();
-});
-document.getElementById('btnManualCancel').addEventListener('click', ()=>{
-  manualModal.style.display = 'none';
-});
-document.getElementById('btnManualAdd').addEventListener('click', ()=>{
-  const name = document.getElementById('manualName').value.trim();
-  const price = parseFloat(document.getElementById('manualPrice').value);
-  if (!name){ toast('Enter an item name'); return; }
-  if (isNaN(price)){ toast('Enter a valid price'); return; }
-  addToCart('MANUAL', name, price);
-  manualModal.style.display = 'none';
-});
-
-/* ---------- Scanner ---------- */
-document.getElementById('btnToggleScan').addEventListener('click', ()=>{
-  scanning ? stopScanner() : startScanner();
-});
-function startScanner(){
-  html5QrCode = new Html5Qrcode("reader");
-  const config = { fps: 10, qrbox: 230 };
-  html5QrCode.start({ facingMode: "environment" }, config, onScanSuccess, ()=>{})
-    .then(()=>{
-      scanning = true;
-      document.getElementById('btnToggleScan').textContent = 'Stop Camera';
-    })
-    .catch(err=>{
-      toast('Camera error: ' + err);
-    });
-}
-function stopScanner(){
-  if (html5QrCode){
-    html5QrCode.stop().then(()=>html5QrCode.clear()).catch(()=>{});
-  }
-  scanning = false;
-  document.getElementById('btnToggleScan').textContent = 'Start Camera';
-}
-function onScanSuccess(decodedText){
-  const now = Date.now();
-  if (decodedText === lastScan.code && (now - lastScan.time) < 1500) return;
-  lastScan = { code: decodedText, time: now };
-  try{
-    const data = JSON.parse(decodedText);
-    if (!data.n || data.p === undefined) throw new Error('missing fields');
-    addToCart(data.sku || 'ITEM', data.n, data.p);
-  }catch(e){
-    toast('Not a recognized item code');
-  }
-}
-
-/* ---------- Checkout / Invoicing ---------- */
-function getNextInvoice(){
-  let n = parseInt(localStorage.getItem('posNextInvoice') || '1001', 10);
-  return n;
-}
-function bumpInvoice(){
-  const n = getNextInvoice();
-  localStorage.setItem('posNextInvoice', String(n+1));
-  document.getElementById('nextInvoice').value = n+1;
-}
-document.getElementById('btnCheckout').addEventListener('click', completeSale);
-function completeSale(){
-  if (cart.length === 0) return;
-  const invoice = getNextInvoice();
-  const timestamp = new Date().toISOString();
-  const items = cart.map(i=>({sku:i.sku, name:i.name, price:i.price, qty:i.qty}));
-  const total = cart.reduce((s,i)=>s+i.price*i.qty,0);
-  const record = { invoice, timestamp, items, total };
-
-  saveToLocalLog(record);
-  sendToSheet(record);
-
-  document.getElementById('lastInvoiceCard').style.display = 'block';
-  document.getElementById('lastInvoiceBody').innerHTML =
-    'Invoice #' + invoice + '<br>' +
-    items.map(i=>i.qty+' x '+i.name+' &mdash; '+money(i.price*i.qty)).join('<br>') +
-    '<br><strong>Collect: ' + money(total) + '</strong>';
-
-  bumpInvoice();
-  cart = [];
-  renderCart();
-  toast('Sale #' + invoice + ' logged \u2014 collect ' + money(total));
-}
-
-/* ---------- Local backup log ---------- */
-function getLocalLog(){
-  try{ return JSON.parse(localStorage.getItem('posSalesLog') || '[]'); }
-  catch(e){ return []; }
-}
-function saveToLocalLog(record){
-  const log = getLocalLog();
-  log.push(record);
-  localStorage.setItem('posSalesLog', JSON.stringify(log));
-  refreshBackupCount();
-}
-function refreshBackupCount(){
-  document.getElementById('backupCount').textContent = getLocalLog().length + ' sale(s) saved on this device';
-}
-function buildCsvString(){
-  const log = getLocalLog();
-  let rows = [['Invoice #','Timestamp','SKU','Item','Unit Price','Qty','Line Total']];
-  log.forEach(r=>{
-    r.items.forEach(i=>{
-      rows.push([r.invoice, r.timestamp, i.sku, i.name, i.price, i.qty, (i.price*i.qty).toFixed(2)]);
-    });
-  });
-  return rows.map(r=>r.map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\n');
-}
-document.getElementById('btnDownloadCsv').addEventListener('click', ()=>{
-  if (getLocalLog().length===0){ toast('No sales to export yet'); return; }
-  const csv = buildCsvString();
-  const blob = new Blob([csv], {type:'text/csv'});
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'beehive-alz-fundraiser-sales.csv';
-  a.click();
-});
-
-const emailInput = document.getElementById('emailAddress');
-emailInput.value = localStorage.getItem('posEmailAddress') || '';
-emailInput.addEventListener('change', ()=>{
-  localStorage.setItem('posEmailAddress', emailInput.value.trim());
-});
-document.getElementById('btnEmailCsv').addEventListener('click', ()=>{
-  if (getLocalLog().length===0){ toast('No sales to export yet'); return; }
-  const email = emailInput.value.trim();
-  if (!email || !email.includes('@')){ toast('Enter a valid email address first'); return; }
-  const url = getScriptUrl();
-  if (!url || url === "https://script.google.com/macros/s/AKfycbzrmwc188VyuJXcFRWFSYOAgdofwCoLyauUrVuQ1vQev6yuRxTth5x-_cSrn3yLQeb3/exechttps://script.google.com/macros/s/AKfycbzrmwc188VyuJXcFRWFSYOAgdofwCoLyauUrVuQ1vQev6yuRxTth5x-_cSrn3yLQeb3/exec"){ toast('Add your Google Sheet script URL first'); return; }
-  localStorage.setItem('posEmailAddress', email);
-  const csv = buildCsvString();
-  fetch(url, {
-    method: 'POST',
-    mode: 'no-cors',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ action: 'email_csv', email: email, csv: csv })
-  }).then(()=>{
-    toast('CSV sent to ' + email);
-  }).catch(()=>{
-    toast('Could not reach the script to send the email');
-  });
-});
-armDangerButton(
-  document.getElementById('btnClearBackup'),
-  'Clear Local Backup',
-  'Tap again to confirm',
-  ()=>{ localStorage.removeItem('posSalesLog'); refreshBackupCount(); toast('Local backup cleared'); }
-);
-
-/* ---------- Google Sheet sync ---------- */
-function sendToSheet(record){
-  const url = getScriptUrl();
-  const statusEl = document.getElementById('syncStatus');
-  if (!url || url === "PASTE_YOUR_DEPLOYED_WEB_APP_URL_HERE"){
-    toast('No Google Sheet connected \u2014 saved locally only');
-    return;
-  }
-  fetch(url, {
-    method: 'POST',
-    mode: 'no-cors',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(record)
-  }).then(()=>{
-    statusEl.innerHTML = '<span class="status-dot dot-ok"></span>Connected \u2014 last sale sent';
-  }).catch(()=>{
-    statusEl.innerHTML = '<span class="status-dot dot-off"></span>Sync failed \u2014 check connection';
-    toast('Could not reach Google Sheet, sale saved locally');
-  });
-}
-
-/* ---------- Settings persistence ---------- */
-const scriptUrlInput = document.getElementById('scriptUrl');
-scriptUrlInput.value = localStorage.getItem('posScriptUrl') || '';
-scriptUrlInput.placeholder = (DEFAULT_SCRIPT_URL !== "PASTE_YOUR_DEPLOYED_WEB_APP_URL_HERE")
-  ? 'Leave blank to use the built-in sheet'
-  : 'https://script.google.com/macros/s/AKfycb.../exec';
-function refreshSyncStatusLabel(){
-  const hasDefault = DEFAULT_SCRIPT_URL !== "PASTE_YOUR_DEPLOYED_WEB_APP_URL_HERE";
-  const hasOverride = !!localStorage.getItem('posScriptUrl');
-  const el = document.getElementById('syncStatus');
-  if (hasOverride){
-    el.innerHTML = '<span class="status-dot dot-ok"></span>Connected (custom sheet)';
-  } else if (hasDefault){
-    el.innerHTML = '<span class="status-dot dot-ok"></span>Connected (default sheet)';
-  } else {
-    el.innerHTML = '<span class="status-dot dot-off"></span>Not connected';
-  }
-}
-scriptUrlInput.addEventListener('change', ()=>{
-  localStorage.setItem('posScriptUrl', scriptUrlInput.value.trim());
-  refreshSyncStatusLabel();
-  toast('Settings saved');
-});
-
-const nextInvoiceInput = document.getElementById('nextInvoice');
-nextInvoiceInput.value = getNextInvoice();
-nextInvoiceInput.addEventListener('change', ()=>{
-  const v = parseInt(nextInvoiceInput.value, 10);
-  if (!isNaN(v) && v > 0){
-    localStorage.setItem('posNextInvoice', String(v));
-    toast('Next invoice set to #' + v);
-  }
-});
-
-/* ---------- QR generation ---------- */
-document.getElementById('btnGenerateQr').addEventListener('click', generateQrGrid);
-document.getElementById('btnPrintQr').addEventListener('click', ()=>window.print());
-function generateQrGrid(){
-  const raw = document.getElementById('itemInput').value.trim();
-  const grid = document.getElementById('qrGrid');
-  grid.innerHTML = '';
-  if (!raw) return;
-  const lines = raw.split('\n').map(l=>l.trim()).filter(Boolean);
-  lines.forEach((line, idx)=>{
-    const parts = line.split(',');
-    const name = (parts[0]||'').trim();
-    const price = parseFloat((parts[1]||'0').trim());
-    if (!name || isNaN(price)) return;
-    const sku = 'IT' + String(idx+1).padStart(2,'0');
-    const payload = JSON.stringify({sku, n:name, p:price});
-
-    const cell = document.createElement('div');
-    cell.className = 'qr-cell';
-    const qrHolder = document.createElement('div');
-    cell.appendChild(qrHolder);
-    const label = document.createElement('div');
-    label.innerHTML = '<div class="qname">'+name+'</div><div class="qprice">'+sku+' &middot; '+money(price)+'</div>';
-    cell.appendChild(label);
-    grid.appendChild(cell);
-
-    new QRCode(qrHolder, { text: payload, width: 120, height: 120, correctLevel: QRCode.CorrectLevel.M });
-  });
-}
-
-/* ---------- Init ---------- */
-refreshBackupCount();
-refreshSyncStatusLabel();
-generateQrGrid();
-renderCart();
-</script>
-</body>
-</html>
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Beehive Homes ALZ Fundraiser POS</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-<style>
-  :root{
-    --bg:#FDF6E8;
-    --surface:#FFFFFF;
-    --ink:#2B1810;
-    --ink-soft:#6E5A46;
-    --primary:#2B1810;
-    --primary-dark:#1B0F09;
-    --accent:#F5A028;
-    --danger:#B3452F;
-    --line:#EEDFC0;
-    --radius:10px;
-  }
-  *{box-sizing:border-box;}
-  body{
-    margin:0;
-    background:var(--bg);
-    color:var(--ink);
-    font-family:'IBM Plex Sans',system-ui,sans-serif;
-    -webkit-tap-highlight-color:transparent;
-  }
-  .mono{font-family:'IBM Plex Mono',monospace;}
-  header{
-    background:var(--primary);
-    color:#fff;
-    padding:16px 16px 12px;
-    position:sticky; top:0; z-index:10;
-  }
-  header h1{
-    margin:0 0 2px;
-    font-size:18px;
-    letter-spacing:.02em;
-  }
-  header p{
-    margin:0;
-    font-size:12px;
-    color:#E9CE9A;
-  }
-  header .head-row{
-    display:flex; align-items:center; gap:10px;
-  }
-  header .logo-mark{
-    flex-shrink:0;
-    background:#fff;
-    border-radius:8px;
-    padding:4px 6px;
-    display:flex;
-    align-items:center;
-  }
-  header .logo-mark img{ display:block; height:32px; width:auto;}
-  header .head-text{ min-width:0; }
-  nav{
-    display:flex;
-    gap:6px;
-    padding:10px 12px 0;
-    background:var(--primary);
-    position:sticky; top:56px; z-index:10;
-  }
-  nav button{
-    flex:1;
-    border:none;
-    background:rgba(255,255,255,.12);
-    color:#F3E4C4;
-    padding:10px 6px;
-    border-radius:8px 8px 0 0;
-    font-size:13px;
-    font-weight:600;
-    cursor:pointer;
-  }
-  nav button.active{
-    background:var(--bg);
-    color:var(--primary);
-  }
-  main{ padding:16px; max-width:480px; margin:0 auto; padding-bottom:60px;}
-  .view{display:none;}
-  .view.active{display:block;}
-  .card{
-    background:var(--surface);
-    border-radius:var(--radius);
-    padding:16px;
-    margin-bottom:14px;
-    border:1px solid var(--line);
-  }
-  .btn{
-    display:block; width:100%;
-    padding:14px;
-    border-radius:8px;
-    border:none;
-    font-size:15px;
-    font-weight:600;
-    cursor:pointer;
-    margin-bottom:10px;
-  }
-  .btn-primary{background:var(--primary); color:#fff;}
-  .btn-accent{background:var(--accent); color:#3A2A0C;}
-  .btn-outline{background:transparent; color:var(--primary); border:1.5px solid var(--primary);}
-  .btn-danger{background:transparent; color:var(--danger); border:1.5px solid var(--danger);}
-  .btn:disabled{opacity:.4; cursor:not-allowed;}
-  #reader{ border-radius:var(--radius); overflow:hidden; margin-bottom:12px; background:#000;}
-  .toast{
-    position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
-    background:var(--ink); color:#fff; padding:10px 16px; border-radius:20px;
-    font-size:13px; opacity:0; transition:opacity .25s; z-index:99; max-width:90%; text-align:center;
-  }
-  .toast.show{opacity:1;}
-
-  /* Receipt styling */
-  .receipt{
-    background:var(--surface);
-    border-radius:var(--radius);
-    padding:18px 16px 10px;
-    border:1px solid var(--line);
-    box-shadow:0 2px 6px rgba(0,0,0,.06);
-  }
-  .receipt-head{
-    text-align:center;
-    font-family:'IBM Plex Mono',monospace;
-    letter-spacing:.12em;
-    font-size:12px;
-    color:var(--ink-soft);
-    text-transform:uppercase;
-    border-bottom:1px dashed var(--line);
-    padding-bottom:10px;
-    margin-bottom:8px;
-  }
-  .line-item{
-    display:flex; justify-content:space-between; align-items:center;
-    padding:8px 0;
-    border-bottom:1px dashed var(--line);
-    font-size:14px;
-  }
-  .line-item .name{font-weight:500;}
-  .line-item .meta{font-size:11px; color:var(--ink-soft);}
-  .line-item .price{font-family:'IBM Plex Mono',monospace; white-space:nowrap; margin-left:10px;}
-  .line-item .rm{
-    background:none; border:none; color:var(--danger); font-size:16px; margin-left:8px; cursor:pointer; padding:2px 6px;
-  }
-  .total-row{
-    display:flex; justify-content:space-between;
-    font-family:'IBM Plex Mono',monospace;
-    font-size:20px; font-weight:700;
-    border-top:3px double var(--ink);
-    margin-top:6px; padding-top:10px;
-  }
-  .empty-note{ text-align:center; color:var(--ink-soft); font-size:13px; padding:20px 0;}
-
-  label{display:block; font-size:13px; font-weight:600; margin:12px 0 6px;}
-  input, textarea{
-    width:100%; padding:10px; border-radius:8px; border:1px solid var(--line);
-    font-size:14px; font-family:inherit; background:#fff; color:var(--ink);
-  }
-  textarea{min-height:110px; font-family:'IBM Plex Mono',monospace; font-size:13px;}
-  small.hint{display:block; color:var(--ink-soft); font-size:12px; margin-top:4px;}
-
-  .qr-grid{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:14px;}
-  .qr-cell{
-    background:#fff; border:1px solid var(--line); border-radius:8px;
-    text-align:center; padding:10px 6px;
-  }
-  .qr-cell canvas, .qr-cell img{ display:block; margin:0 auto 6px;}
-  .qr-cell .qname{font-weight:600; font-size:12px;}
-  .qr-cell .qprice{font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--ink-soft);}
-
-  .status-dot{ display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px;}
-  .dot-ok{background:#3E8E6E;}
-  .dot-off{background:var(--danger);}
-
-  @media print{
-    header, nav, .no-print{display:none !important;}
-    body{background:#fff;}
-    .qr-grid{grid-template-columns:repeat(3,1fr);}
-  }
-</style>
-</head>
-<body>
-
-<header>
-  <div class="head-row">
-    <div class="logo-mark"><img src="data:image/jpeg;base64,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" alt="Beehive Homes of Lakeville logo"></div>
-    <div class="head-text">
-      <h1>Beehive Homes ALZ Fundraiser</h1>
-      <p>Scan &rarr; Cart &rarr; Invoice &rarr; Google Sheet</p>
-    </div>
-  </div>
-</header>
-
-<nav>
-  <button data-view="scan" class="active">Scan &amp; Sell</button>
-  <button data-view="print">Print QR Codes</button>
-  <button data-view="settings">Settings</button>
-</nav>
-
-<main>
-
-  <!-- SCAN & SELL -->
-  <section id="view-scan" class="view active">
-    <div class="card no-print">
-      <button id="btnToggleScan" class="btn btn-primary">Start Camera</button>
-      <div id="reader"></div>
-      <button id="btnAddManual" class="btn btn-outline">+ Add Item Manually</button>
-    </div>
-
-    <div id="manualModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:50; align-items:center; justify-content:center; padding:20px;">
-      <div class="card" style="width:100%; max-width:360px; margin-bottom:0;">
-        <label style="margin-top:0;">Item name</label>
-        <input id="manualName" type="text" placeholder="e.g. Bake Sale Cookie">
-        <label>Price</label>
-        <input id="manualPrice" type="number" step="0.01" min="0" placeholder="0.00">
-        <button id="btnManualAdd" class="btn btn-accent" style="margin-top:14px;">Add to Sale</button>
-        <button id="btnManualCancel" class="btn btn-outline" style="margin-bottom:0;">Cancel</button>
-      </div>
-    </div>
-
-    <div class="receipt" id="receipt">
-      <div class="receipt-head">Current Sale</div>
-      <div id="cartList"><div class="empty-note">Scan an item to begin</div></div>
-      <div class="total-row"><span>Total</span><span id="cartTotal">$0.00</span></div>
-    </div>
-
-    <button id="btnCheckout" class="btn btn-accent" style="margin-top:14px;" disabled>Complete Sale &amp; Log It</button>
-    <button id="btnClearCart" class="btn btn-danger" disabled>Clear Current Sale</button>
-
-    <div class="card" id="lastInvoiceCard" style="display:none;">
-      <div class="receipt-head">Last Completed Sale</div>
-      <div id="lastInvoiceBody" class="mono" style="font-size:14px;"></div>
-    </div>
-  </section>
-
-  <!-- PRINT QR CODES -->
-  <section id="view-print" class="view">
-    <div class="card">
-      <p style="margin-top:0; font-size:13px; color:var(--ink-soft);">
-        Enter one item per line as <span class="mono">Name, Price</span>. These fictitious items are pre-loaded so you can test the whole flow right now &mdash; replace them with your real items later.
-      </p>
-      <label>Items</label>
-      <textarea id="itemInput">Handmade Candle, 12.00
-Baked Goods Basket, 8.50
-Raffle Ticket, 5.00
-Tote Bag, 15.00
-Cookie Dozen, 10.00
-Plant Cutting, 6.00</textarea>
-      <button id="btnGenerateQr" class="btn btn-primary" style="margin-top:10px;">Generate QR Codes</button>
-      <button id="btnPrintQr" class="btn btn-outline no-print">Print This Page</button>
-    </div>
-    <div class="qr-grid" id="qrGrid"></div>
-  </section>
-
-  <!-- SETTINGS -->
-  <section id="view-settings" class="view">
-    <div class="card">
-      <label>Google Sheet sync status</label>
-      <p id="syncStatus" class="mono" style="font-size:13px;"><span class="status-dot dot-off"></span>Not connected</p>
-
-      <label>Google Apps Script Web App URL</label>
-      <input id="scriptUrl" type="url" placeholder="https://script.google.com/macros/s/AKfycb.../exec">
-      <small class="hint">See setup instructions in chat. Paste the URL you get after deploying the script, then it saves automatically.</small>
-
-      <label>Next invoice number</label>
-      <input id="nextInvoice" type="number" min="1">
-      <small class="hint">Change this any time, e.g. to start today's sales at 1001.</small>
-    </div>
-
-    <div class="card">
-      <label style="margin-top:0;">Local backup (works even if wifi drops)</label>
-      <p id="backupCount" class="mono" style="font-size:13px;">0 sales saved on this device</p>
-      <button id="btnDownloadCsv" class="btn btn-outline">Download Backup as CSV</button>
-
-      <label>Email backup to</label>
-      <input id="emailAddress" type="email" placeholder="you@example.com">
-      <button id="btnEmailCsv" class="btn btn-primary" style="margin-top:10px;">Email Backup CSV</button>
-      <small class="hint">Sends through your connected Google Sheet script. Requires the Google Sheet URL above to be set, and the script updated to the mail-enabled version (see chat).</small>
-
-      <button id="btnClearBackup" class="btn btn-danger" style="margin-top:14px;">Clear Local Backup</button>
-    </div>
-  </section>
-
-</main>
-
-<div class="toast" id="toast"></div>
-
-<script>
-/* ---------- Config ---------- */
-/* Paste your Google Apps Script Web App URL here so every device has it by default.
-   Anyone can still override it per-device in the Settings tab, which takes priority
-   over this value without changing this file. */
-const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzrmwc188VyuJXcFRWFSYOAgdofwCoLyauUrVuQ1vQev6yuRxTth5x-_cSrn3yLQeb3/exechttps://script.google.com/macros/s/AKfycbzrmwc188VyuJXcFRWFSYOAgdofwCoLyauUrVuQ1vQev6yuRxTth5x-_cSrn3yLQeb3/exec";
+const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzrmwc188VyuJXcFRWFSYOAgdofwCoLyauUrVuQ1vQev6yuRxTth5x-_cSrn3yLQeb3/exec";
 function getScriptUrl(){
   const override = localStorage.getItem('posScriptUrl');
   return (override && override.trim()) ? override.trim() : DEFAULT_SCRIPT_URL;
@@ -1254,6 +607,26 @@ scriptUrlInput.addEventListener('change', ()=>{
   refreshSyncStatusLabel();
   toast('Settings saved');
 });
+document.getElementById('btnTestConnection').addEventListener('click', ()=>{
+  const url = getScriptUrl();
+  if (!url || url === "PASTE_YOUR_DEPLOYED_WEB_APP_URL_HERE"){
+    toast('No sheet URL set yet');
+    return;
+  }
+  toast('Testing...');
+  fetch(url, { method: 'GET' })
+    .then(res => res.text().then(text => ({ ok: res.ok, status: res.status, text })))
+    .then(({ ok, status, text }) => {
+      if (ok){
+        toast('Connected: ' + text.slice(0, 60));
+      } else {
+        toast('Script responded with an error (status ' + status + ')');
+      }
+    })
+    .catch(() => {
+      toast('Could not reach that URL \u2014 double check it and redeploy if needed');
+    });
+});
 
 const nextInvoiceInput = document.getElementById('nextInvoice');
 nextInvoiceInput.value = getNextInvoice();
@@ -1291,7 +664,685 @@ function generateQrGrid(){
     cell.appendChild(label);
     grid.appendChild(cell);
 
-    new QRCode(qrHolder, { text: payload, width: 120, height: 120, correctLevel: QRCode.CorrectLevel.M });
+    new QRCode(qrHolder, { text: payload, width: 240, height: 240, correctLevel: QRCode.CorrectLevel.M });
+  });
+}
+
+/* ---------- Init ---------- */
+refreshBackupCount();
+refreshSyncStatusLabel();
+generateQrGrid();
+renderCart();
+</script>
+</body>
+</html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Beehive Homes ALZ Fundraiser POS</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<style>
+  :root{
+    --bg:#FDF6E8;
+    --surface:#FFFFFF;
+    --ink:#2B1810;
+    --ink-soft:#6E5A46;
+    --primary:#2B1810;
+    --primary-dark:#1B0F09;
+    --accent:#F5A028;
+    --danger:#B3452F;
+    --line:#EEDFC0;
+    --radius:10px;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--ink);
+    font-family:'IBM Plex Sans',system-ui,sans-serif;
+    -webkit-tap-highlight-color:transparent;
+  }
+  .mono{font-family:'IBM Plex Mono',monospace;}
+  header{
+    background:var(--primary);
+    color:#fff;
+    padding:16px 16px 12px;
+    position:sticky; top:0; z-index:10;
+  }
+  header h1{
+    margin:0 0 2px;
+    font-size:18px;
+    letter-spacing:.02em;
+  }
+  header p{
+    margin:0;
+    font-size:12px;
+    color:#E9CE9A;
+  }
+  header .head-row{
+    display:flex; align-items:center; gap:10px;
+  }
+  header .logo-mark{
+    flex-shrink:0;
+    background:#fff;
+    border-radius:8px;
+    padding:4px 6px;
+    display:flex;
+    align-items:center;
+  }
+  header .logo-mark img{ display:block; height:32px; width:auto;}
+  header .head-text{ min-width:0; }
+  nav{
+    display:flex;
+    gap:6px;
+    padding:10px 12px 0;
+    background:var(--primary);
+    position:sticky; top:56px; z-index:10;
+  }
+  nav button{
+    flex:1;
+    border:none;
+    background:rgba(255,255,255,.12);
+    color:#F3E4C4;
+    padding:10px 6px;
+    border-radius:8px 8px 0 0;
+    font-size:13px;
+    font-weight:600;
+    cursor:pointer;
+  }
+  nav button.active{
+    background:var(--bg);
+    color:var(--primary);
+  }
+  main{ padding:16px; max-width:480px; margin:0 auto; padding-bottom:60px;}
+  .view{display:none;}
+  .view.active{display:block;}
+  .card{
+    background:var(--surface);
+    border-radius:var(--radius);
+    padding:16px;
+    margin-bottom:14px;
+    border:1px solid var(--line);
+  }
+  .btn{
+    display:block; width:100%;
+    padding:14px;
+    border-radius:8px;
+    border:none;
+    font-size:15px;
+    font-weight:600;
+    cursor:pointer;
+    margin-bottom:10px;
+  }
+  .btn-primary{background:var(--primary); color:#fff;}
+  .btn-accent{background:var(--accent); color:#3A2A0C;}
+  .btn-outline{background:transparent; color:var(--primary); border:1.5px solid var(--primary);}
+  .btn-danger{background:transparent; color:var(--danger); border:1.5px solid var(--danger);}
+  .btn:disabled{opacity:.4; cursor:not-allowed;}
+  #reader{ border-radius:var(--radius); overflow:hidden; margin-bottom:12px; background:#000;}
+  .toast{
+    position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
+    background:var(--ink); color:#fff; padding:10px 16px; border-radius:20px;
+    font-size:13px; opacity:0; transition:opacity .25s; z-index:99; max-width:90%; text-align:center;
+  }
+  .toast.show{opacity:1;}
+
+  /* Receipt styling */
+  .receipt{
+    background:var(--surface);
+    border-radius:var(--radius);
+    padding:18px 16px 10px;
+    border:1px solid var(--line);
+    box-shadow:0 2px 6px rgba(0,0,0,.06);
+  }
+  .receipt-head{
+    text-align:center;
+    font-family:'IBM Plex Mono',monospace;
+    letter-spacing:.12em;
+    font-size:12px;
+    color:var(--ink-soft);
+    text-transform:uppercase;
+    border-bottom:1px dashed var(--line);
+    padding-bottom:10px;
+    margin-bottom:8px;
+  }
+  .line-item{
+    display:flex; justify-content:space-between; align-items:center;
+    padding:8px 0;
+    border-bottom:1px dashed var(--line);
+    font-size:14px;
+  }
+  .line-item .name{font-weight:500;}
+  .line-item .meta{font-size:11px; color:var(--ink-soft);}
+  .line-item .price{font-family:'IBM Plex Mono',monospace; white-space:nowrap; margin-left:10px;}
+  .line-item .rm{
+    background:none; border:none; color:var(--danger); font-size:16px; margin-left:8px; cursor:pointer; padding:2px 6px;
+  }
+  .total-row{
+    display:flex; justify-content:space-between;
+    font-family:'IBM Plex Mono',monospace;
+    font-size:20px; font-weight:700;
+    border-top:3px double var(--ink);
+    margin-top:6px; padding-top:10px;
+  }
+  .empty-note{ text-align:center; color:var(--ink-soft); font-size:13px; padding:20px 0;}
+
+  label{display:block; font-size:13px; font-weight:600; margin:12px 0 6px;}
+  input, textarea{
+    width:100%; padding:10px; border-radius:8px; border:1px solid var(--line);
+    font-size:14px; font-family:inherit; background:#fff; color:var(--ink);
+  }
+  textarea{min-height:110px; font-family:'IBM Plex Mono',monospace; font-size:13px;}
+  small.hint{display:block; color:var(--ink-soft); font-size:12px; margin-top:4px;}
+
+  .qr-grid{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:14px;}
+  .qr-cell{
+    background:#fff; border:1px solid var(--line); border-radius:8px;
+    text-align:center; padding:10px 6px;
+  }
+  .qr-cell canvas, .qr-cell img{ display:block; margin:0 auto 6px;}
+  .qr-cell .qname{font-weight:600; font-size:12px;}
+  .qr-cell .qprice{font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--ink-soft);}
+
+  .status-dot{ display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px;}
+  .dot-ok{background:#3E8E6E;}
+  .dot-off{background:var(--danger);}
+
+  @media print{
+    header, nav, .no-print{display:none !important;}
+    body{background:#fff;}
+    .qr-grid{grid-template-columns:repeat(2,1fr);}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="head-row">
+    <div class="logo-mark"><img src="data:image/jpeg;base64,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" alt="Beehive Homes of Lakeville logo"></div>
+    <div class="head-text">
+      <h1>Beehive Homes ALZ Fundraiser</h1>
+      <p>Scan &rarr; Cart &rarr; Invoice &rarr; Google Sheet</p>
+    </div>
+  </div>
+</header>
+
+<nav>
+  <button data-view="scan" class="active">Scan &amp; Sell</button>
+  <button data-view="print">Print QR Codes</button>
+  <button data-view="settings">Settings</button>
+</nav>
+
+<main>
+
+  <!-- SCAN & SELL -->
+  <section id="view-scan" class="view active">
+    <div class="card no-print">
+      <button id="btnToggleScan" class="btn btn-primary">Start Camera</button>
+      <div id="reader"></div>
+      <button id="btnAddManual" class="btn btn-outline">+ Add Item Manually</button>
+    </div>
+
+    <div id="manualModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:50; align-items:center; justify-content:center; padding:20px;">
+      <div class="card" style="width:100%; max-width:360px; margin-bottom:0;">
+        <label style="margin-top:0;">Item name</label>
+        <input id="manualName" type="text" placeholder="e.g. Bake Sale Cookie">
+        <label>Price</label>
+        <input id="manualPrice" type="number" step="0.01" min="0" placeholder="0.00">
+        <button id="btnManualAdd" class="btn btn-accent" style="margin-top:14px;">Add to Sale</button>
+        <button id="btnManualCancel" class="btn btn-outline" style="margin-bottom:0;">Cancel</button>
+      </div>
+    </div>
+
+    <div class="receipt" id="receipt">
+      <div class="receipt-head">Current Sale</div>
+      <div id="cartList"><div class="empty-note">Scan an item to begin</div></div>
+      <div class="total-row"><span>Total</span><span id="cartTotal">$0.00</span></div>
+    </div>
+
+    <button id="btnCheckout" class="btn btn-accent" style="margin-top:14px;" disabled>Complete Sale &amp; Log It</button>
+    <button id="btnClearCart" class="btn btn-danger" disabled>Clear Current Sale</button>
+
+    <div class="card" id="lastInvoiceCard" style="display:none;">
+      <div class="receipt-head">Last Completed Sale</div>
+      <div id="lastInvoiceBody" class="mono" style="font-size:14px;"></div>
+    </div>
+  </section>
+
+  <!-- PRINT QR CODES -->
+  <section id="view-print" class="view">
+    <div class="card no-print">
+      <p style="margin-top:0; font-size:13px; color:var(--ink-soft);">
+        Enter one item per line as <span class="mono">Name, Price</span>. These are the real items pre-loaded so you can use them right away &mdash; add additional items manually as needed.
+      </p>
+      <label>Items</label>
+      <textarea id="itemInput">Carmels, 2.00
+Chocolate Chip Cookies, 5.00
+Cinnamon Rolls, 3.00
+Pumpkin Scones, 4.00
+Soup in a Jar, 15.00
+White Chocolate Raspberry Scones, 4.00
+2026 Adult T-Shirt, 28.00
+2026 Youth T-Shirt, 28.00
+2025 Adult T-Shirt, 22.00
+2025 Youth T-Shirt, 22.00
+ALZ Flower Pins, 5.00
+Bracelets, 3.00
+Keychains, 5.00
+Rock Art, 15.00
+Wool Mittens, 25.00</textarea>
+      <button id="btnGenerateQr" class="btn btn-primary" style="margin-top:10px;">Generate QR Codes</button>
+      <button id="btnPrintQr" class="btn btn-outline">Print This Page</button>
+    </div>
+    <div class="qr-grid" id="qrGrid"></div>
+  </section>
+
+  <!-- SETTINGS -->
+  <section id="view-settings" class="view">
+    <div class="card">
+      <label>Google Sheet sync status</label>
+      <p id="syncStatus" class="mono" style="font-size:13px;"><span class="status-dot dot-off"></span>Not connected</p>
+
+      <label>Google Apps Script Web App URL</label>
+      <input id="scriptUrl" type="url">
+      <small class="hint">See setup instructions in chat. Leave blank to use the built-in sheet, or paste a different URL to override it, then it saves automatically.</small>
+      <button id="btnTestConnection" class="btn btn-outline" style="margin-top:10px;">Test Connection</button>
+
+      <label>Next invoice number</label>
+      <input id="nextInvoice" type="number" min="1">
+      <small class="hint">Change this any time, e.g. to start today's sales at 1001.</small>
+    </div>
+
+    <div class="card">
+      <label style="margin-top:0;">Local backup (works even if wifi drops)</label>
+      <p id="backupCount" class="mono" style="font-size:13px;">0 sales saved on this device</p>
+      <button id="btnDownloadCsv" class="btn btn-outline">Download Backup as CSV</button>
+
+      <label>Email backup to</label>
+      <input id="emailAddress" type="email" placeholder="you@example.com">
+      <button id="btnEmailCsv" class="btn btn-primary" style="margin-top:10px;">Email Backup CSV</button>
+      <small class="hint">Sends through your connected Google Sheet script. Requires the Google Sheet URL above to be set, and the script updated to the mail-enabled version (see chat).</small>
+
+      <button id="btnClearBackup" class="btn btn-danger" style="margin-top:14px;">Clear Local Backup</button>
+    </div>
+  </section>
+
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ---------- Config ---------- */
+/* Paste your Google Apps Script Web App URL here so every device has it by default.
+   Anyone can still override it per-device in the Settings tab, which takes priority
+   over this value without changing this file. */
+const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzrmwc188VyuJXcFRWFSYOAgdofwCoLyauUrVuQ1vQev6yuRxTth5x-_cSrn3yLQeb3/exec";
+function getScriptUrl(){
+  const override = localStorage.getItem('posScriptUrl');
+  return (override && override.trim()) ? override.trim() : DEFAULT_SCRIPT_URL;
+}
+
+/* ---------- State ---------- */
+let cart = [];
+let scanning = false;
+let html5QrCode = null;
+let lastScan = { code: null, time: 0 };
+
+/* ---------- Helpers ---------- */
+function toast(msg, ms=2200){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(t._timer);
+  t._timer = setTimeout(()=>t.classList.remove('show'), ms);
+}
+function money(n){ return '$' + Number(n).toFixed(2); }
+function beep(){
+  try{
+    const ctx = new (window.AudioContext||window.webkitAudioContext)();
+    const o = ctx.createOscillator(); const g = ctx.createGain();
+    o.type='sine'; o.frequency.value=880;
+    o.connect(g); g.connect(ctx.destination);
+    g.gain.setValueAtTime(0.15, ctx.currentTime);
+    o.start(); o.stop(ctx.currentTime + 0.1);
+  }catch(e){}
+  if (navigator.vibrate) navigator.vibrate(80);
+}
+
+/* ---------- Navigation ---------- */
+document.querySelectorAll('nav button').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
+    document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('view-'+btn.dataset.view).classList.add('active');
+    if (btn.dataset.view !== 'scan' && scanning) stopScanner();
+  });
+});
+
+/* ---------- Cart ---------- */
+function addToCart(sku, name, price){
+  const existing = cart.find(i=>i.sku===sku);
+  if (existing){ existing.qty += 1; }
+  else { cart.push({sku, name, price:Number(price), qty:1}); }
+  renderCart();
+  beep();
+  toast('Added: ' + name + ' (' + money(price) + ')');
+}
+function removeFromCart(idx){
+  cart.splice(idx,1);
+  renderCart();
+}
+function renderCart(){
+  const list = document.getElementById('cartList');
+  const totalEl = document.getElementById('cartTotal');
+  if (cart.length === 0){
+    list.innerHTML = '<div class="empty-note">Scan an item to begin</div>';
+  } else {
+    list.innerHTML = cart.map((i,idx)=>`
+      <div class="line-item">
+        <div>
+          <div class="name">${i.name}</div>
+          <div class="meta">${i.sku} &middot; qty ${i.qty} &times; ${money(i.price)}</div>
+        </div>
+        <div style="display:flex;align-items:center;">
+          <span class="price">${money(i.price*i.qty)}</span>
+          <button class="rm" onclick="removeFromCart(${idx})">&times;</button>
+        </div>
+      </div>
+    `).join('');
+  }
+  const total = cart.reduce((s,i)=>s+i.price*i.qty,0);
+  totalEl.textContent = money(total);
+  document.getElementById('btnCheckout').disabled = cart.length===0;
+  document.getElementById('btnClearCart').disabled = cart.length===0;
+}
+function armDangerButton(btn, idleLabel, confirmLabel, onConfirm){
+  let armed = false;
+  let timer = null;
+  btn.textContent = idleLabel;
+  btn.addEventListener('click', ()=>{
+    if (!armed){
+      armed = true;
+      btn.textContent = confirmLabel;
+      timer = setTimeout(()=>{ armed = false; btn.textContent = idleLabel; }, 3000);
+    } else {
+      clearTimeout(timer);
+      armed = false;
+      btn.textContent = idleLabel;
+      onConfirm();
+    }
+  });
+}
+armDangerButton(
+  document.getElementById('btnClearCart'),
+  'Clear Current Sale',
+  'Tap again to confirm',
+  ()=>{ cart = []; renderCart(); toast('Current sale cleared'); }
+);
+
+/* Manual add item modal (avoids native prompt(), which some mobile in-app browsers block) */
+const manualModal = document.getElementById('manualModal');
+document.getElementById('btnAddManual').addEventListener('click', ()=>{
+  document.getElementById('manualName').value = '';
+  document.getElementById('manualPrice').value = '';
+  manualModal.style.display = 'flex';
+  document.getElementById('manualName').focus();
+});
+document.getElementById('btnManualCancel').addEventListener('click', ()=>{
+  manualModal.style.display = 'none';
+});
+document.getElementById('btnManualAdd').addEventListener('click', ()=>{
+  const name = document.getElementById('manualName').value.trim();
+  const price = parseFloat(document.getElementById('manualPrice').value);
+  if (!name){ toast('Enter an item name'); return; }
+  if (isNaN(price)){ toast('Enter a valid price'); return; }
+  addToCart('MANUAL', name, price);
+  manualModal.style.display = 'none';
+});
+
+/* ---------- Scanner ---------- */
+document.getElementById('btnToggleScan').addEventListener('click', ()=>{
+  scanning ? stopScanner() : startScanner();
+});
+function startScanner(){
+  html5QrCode = new Html5Qrcode("reader");
+  const config = { fps: 10, qrbox: 230 };
+  html5QrCode.start({ facingMode: "environment" }, config, onScanSuccess, ()=>{})
+    .then(()=>{
+      scanning = true;
+      document.getElementById('btnToggleScan').textContent = 'Stop Camera';
+    })
+    .catch(err=>{
+      toast('Camera error: ' + err);
+    });
+}
+function stopScanner(){
+  if (html5QrCode){
+    html5QrCode.stop().then(()=>html5QrCode.clear()).catch(()=>{});
+  }
+  scanning = false;
+  document.getElementById('btnToggleScan').textContent = 'Start Camera';
+}
+function onScanSuccess(decodedText){
+  const now = Date.now();
+  if (decodedText === lastScan.code && (now - lastScan.time) < 1500) return;
+  lastScan = { code: decodedText, time: now };
+  try{
+    const data = JSON.parse(decodedText);
+    if (!data.n || data.p === undefined) throw new Error('missing fields');
+    addToCart(data.sku || 'ITEM', data.n, data.p);
+  }catch(e){
+    toast('Not a recognized item code');
+  }
+}
+
+/* ---------- Checkout / Invoicing ---------- */
+function getNextInvoice(){
+  let n = parseInt(localStorage.getItem('posNextInvoice') || '1001', 10);
+  return n;
+}
+function bumpInvoice(){
+  const n = getNextInvoice();
+  localStorage.setItem('posNextInvoice', String(n+1));
+  document.getElementById('nextInvoice').value = n+1;
+}
+document.getElementById('btnCheckout').addEventListener('click', completeSale);
+function completeSale(){
+  if (cart.length === 0) return;
+  const invoice = getNextInvoice();
+  const timestamp = new Date().toISOString();
+  const items = cart.map(i=>({sku:i.sku, name:i.name, price:i.price, qty:i.qty}));
+  const total = cart.reduce((s,i)=>s+i.price*i.qty,0);
+  const record = { invoice, timestamp, items, total };
+
+  saveToLocalLog(record);
+  sendToSheet(record);
+
+  document.getElementById('lastInvoiceCard').style.display = 'block';
+  document.getElementById('lastInvoiceBody').innerHTML =
+    'Invoice #' + invoice + '<br>' +
+    items.map(i=>i.qty+' x '+i.name+' &mdash; '+money(i.price*i.qty)).join('<br>') +
+    '<br><strong>Collect: ' + money(total) + '</strong>';
+
+  bumpInvoice();
+  cart = [];
+  renderCart();
+  toast('Sale #' + invoice + ' logged \u2014 collect ' + money(total));
+}
+
+/* ---------- Local backup log ---------- */
+function getLocalLog(){
+  try{ return JSON.parse(localStorage.getItem('posSalesLog') || '[]'); }
+  catch(e){ return []; }
+}
+function saveToLocalLog(record){
+  const log = getLocalLog();
+  log.push(record);
+  localStorage.setItem('posSalesLog', JSON.stringify(log));
+  refreshBackupCount();
+}
+function refreshBackupCount(){
+  document.getElementById('backupCount').textContent = getLocalLog().length + ' sale(s) saved on this device';
+}
+function buildCsvString(){
+  const log = getLocalLog();
+  let rows = [['Invoice #','Timestamp','SKU','Item','Unit Price','Qty','Line Total']];
+  log.forEach(r=>{
+    r.items.forEach(i=>{
+      rows.push([r.invoice, r.timestamp, i.sku, i.name, i.price, i.qty, (i.price*i.qty).toFixed(2)]);
+    });
+  });
+  return rows.map(r=>r.map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\n');
+}
+document.getElementById('btnDownloadCsv').addEventListener('click', ()=>{
+  if (getLocalLog().length===0){ toast('No sales to export yet'); return; }
+  const csv = buildCsvString();
+  const blob = new Blob([csv], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'beehive-alz-fundraiser-sales.csv';
+  a.click();
+});
+
+const emailInput = document.getElementById('emailAddress');
+emailInput.value = localStorage.getItem('posEmailAddress') || '';
+emailInput.addEventListener('change', ()=>{
+  localStorage.setItem('posEmailAddress', emailInput.value.trim());
+});
+document.getElementById('btnEmailCsv').addEventListener('click', ()=>{
+  if (getLocalLog().length===0){ toast('No sales to export yet'); return; }
+  const email = emailInput.value.trim();
+  if (!email || !email.includes('@')){ toast('Enter a valid email address first'); return; }
+  const url = getScriptUrl();
+  if (!url || url === "PASTE_YOUR_DEPLOYED_WEB_APP_URL_HERE"){ toast('Add your Google Sheet script URL first'); return; }
+  localStorage.setItem('posEmailAddress', email);
+  const csv = buildCsvString();
+  fetch(url, {
+    method: 'POST',
+    mode: 'no-cors',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ action: 'email_csv', email: email, csv: csv })
+  }).then(()=>{
+    toast('CSV sent to ' + email);
+  }).catch(()=>{
+    toast('Could not reach the script to send the email');
+  });
+});
+armDangerButton(
+  document.getElementById('btnClearBackup'),
+  'Clear Local Backup',
+  'Tap again to confirm',
+  ()=>{ localStorage.removeItem('posSalesLog'); refreshBackupCount(); toast('Local backup cleared'); }
+);
+
+/* ---------- Google Sheet sync ---------- */
+function sendToSheet(record){
+  const url = getScriptUrl();
+  const statusEl = document.getElementById('syncStatus');
+  if (!url || url === "PASTE_YOUR_DEPLOYED_WEB_APP_URL_HERE"){
+    toast('No Google Sheet connected \u2014 saved locally only');
+    return;
+  }
+  fetch(url, {
+    method: 'POST',
+    mode: 'no-cors',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(record)
+  }).then(()=>{
+    statusEl.innerHTML = '<span class="status-dot dot-ok"></span>Connected \u2014 last sale sent';
+  }).catch(()=>{
+    statusEl.innerHTML = '<span class="status-dot dot-off"></span>Sync failed \u2014 check connection';
+    toast('Could not reach Google Sheet, sale saved locally');
+  });
+}
+
+/* ---------- Settings persistence ---------- */
+const scriptUrlInput = document.getElementById('scriptUrl');
+scriptUrlInput.value = localStorage.getItem('posScriptUrl') || '';
+scriptUrlInput.placeholder = (DEFAULT_SCRIPT_URL !== "PASTE_YOUR_DEPLOYED_WEB_APP_URL_HERE")
+  ? 'Leave blank to use the built-in sheet'
+  : 'https://script.google.com/macros/s/AKfycb.../exec';
+function refreshSyncStatusLabel(){
+  const hasDefault = DEFAULT_SCRIPT_URL !== "PASTE_YOUR_DEPLOYED_WEB_APP_URL_HERE";
+  const hasOverride = !!localStorage.getItem('posScriptUrl');
+  const el = document.getElementById('syncStatus');
+  if (hasOverride){
+    el.innerHTML = '<span class="status-dot dot-ok"></span>Connected (custom sheet)';
+  } else if (hasDefault){
+    el.innerHTML = '<span class="status-dot dot-ok"></span>Connected (default sheet)';
+  } else {
+    el.innerHTML = '<span class="status-dot dot-off"></span>Not connected';
+  }
+}
+scriptUrlInput.addEventListener('change', ()=>{
+  localStorage.setItem('posScriptUrl', scriptUrlInput.value.trim());
+  refreshSyncStatusLabel();
+  toast('Settings saved');
+});
+document.getElementById('btnTestConnection').addEventListener('click', ()=>{
+  const url = getScriptUrl();
+  if (!url || url === "PASTE_YOUR_DEPLOYED_WEB_APP_URL_HERE"){
+    toast('No sheet URL set yet');
+    return;
+  }
+  toast('Testing...');
+  fetch(url, { method: 'GET' })
+    .then(res => res.text().then(text => ({ ok: res.ok, status: res.status, text })))
+    .then(({ ok, status, text }) => {
+      if (ok){
+        toast('Connected: ' + text.slice(0, 60));
+      } else {
+        toast('Script responded with an error (status ' + status + ')');
+      }
+    })
+    .catch(() => {
+      toast('Could not reach that URL \u2014 double check it and redeploy if needed');
+    });
+});
+
+const nextInvoiceInput = document.getElementById('nextInvoice');
+nextInvoiceInput.value = getNextInvoice();
+nextInvoiceInput.addEventListener('change', ()=>{
+  const v = parseInt(nextInvoiceInput.value, 10);
+  if (!isNaN(v) && v > 0){
+    localStorage.setItem('posNextInvoice', String(v));
+    toast('Next invoice set to #' + v);
+  }
+});
+
+/* ---------- QR generation ---------- */
+document.getElementById('btnGenerateQr').addEventListener('click', generateQrGrid);
+document.getElementById('btnPrintQr').addEventListener('click', ()=>window.print());
+function generateQrGrid(){
+  const raw = document.getElementById('itemInput').value.trim();
+  const grid = document.getElementById('qrGrid');
+  grid.innerHTML = '';
+  if (!raw) return;
+  const lines = raw.split('\n').map(l=>l.trim()).filter(Boolean);
+  lines.forEach((line, idx)=>{
+    const parts = line.split(',');
+    const name = (parts[0]||'').trim();
+    const price = parseFloat((parts[1]||'0').trim());
+    if (!name || isNaN(price)) return;
+    const sku = 'IT' + String(idx+1).padStart(2,'0');
+    const payload = JSON.stringify({sku, n:name, p:price});
+
+    const cell = document.createElement('div');
+    cell.className = 'qr-cell';
+    const qrHolder = document.createElement('div');
+    cell.appendChild(qrHolder);
+    const label = document.createElement('div');
+    label.innerHTML = '<div class="qname">'+name+'</div><div class="qprice">'+sku+' &middot; '+money(price)+'</div>';
+    cell.appendChild(label);
+    grid.appendChild(cell);
+
+    new QRCode(qrHolder, { text: payload, width: 240, height: 240, correctLevel: QRCode.CorrectLevel.M });
   });
 }
 
