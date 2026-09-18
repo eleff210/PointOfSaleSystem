@@ -189,7 +189,29 @@
   @media print{
     header, nav, .no-print{display:none !important;}
     body{background:#fff;}
-    .qr-grid{grid-template-columns:repeat(2,1fr);}
+    main{padding:0; max-width:none;}
+    .qr-grid{
+      grid-template-columns:repeat(2,1fr);
+      gap:10px;
+    }
+    .qr-cell{
+      border-width:4px;
+      padding:8px 4px 6px;
+      page-break-inside:avoid;
+      break-inside:avoid;
+    }
+    .qr-cell canvas{
+      width:185px !important;
+      height:185px !important;
+    }
+    .qr-cell .bee-icon{
+      width:26px; height:26px;
+      top:-13px; right:-11px;
+    }
+    .qr-cell:nth-child(6n){
+      page-break-after:always;
+      break-after:page;
+    }
   }
 </style>
 </head>
