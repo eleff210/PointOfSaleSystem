@@ -162,7 +162,8 @@
   textarea{min-height:110px; font-family:'IBM Plex Mono',monospace; font-size:13px;}
   small.hint{display:block; color:var(--ink-soft); font-size:12px; margin-top:4px;}
 
-  .qr-grid{ display:grid; grid-template-columns:1fr 1fr; gap:18px; margin-top:14px;}
+  .qr-grid{ margin-top:14px;}
+  .qr-page{ display:grid; grid-template-columns:1fr 1fr; gap:18px; margin-bottom:14px;}
   .qr-cell{
     position:relative;
     background:#fff;
@@ -190,9 +191,16 @@
     header, nav, .no-print{display:none !important;}
     body{background:#fff;}
     main{padding:0; max-width:none;}
-    .qr-grid{
+    .qr-page{
       grid-template-columns:repeat(2,1fr);
       gap:16px;
+      margin-bottom:0;
+      page-break-after:always;
+      break-after:page;
+    }
+    .qr-page:last-child{
+      page-break-after:auto;
+      break-after:auto;
     }
     .qr-cell{
       border-width:5px;
@@ -207,10 +215,6 @@
     .qr-cell .bee-icon{
       width:32px; height:32px;
       top:-16px; right:-14px;
-    }
-    .qr-cell:nth-child(4n){
-      page-break-after:always;
-      break-after:page;
     }
   }
 </style>
@@ -738,6 +742,7 @@ function generateQrGrid(){
   grid.innerHTML = '';
   if (!raw) return;
   const lines = raw.split('\n').map(l=>l.trim()).filter(Boolean);
+  let currentPage = null;
   lines.forEach((line, idx)=>{
     const parts = line.split(',');
     const name = (parts[0]||'').trim();
@@ -745,6 +750,12 @@ function generateQrGrid(){
     if (!name || isNaN(price)) return;
     const sku = 'IT' + String(idx+1).padStart(2,'0');
     const payload = JSON.stringify({sku, n:name, p:price});
+
+    if (idx % 4 === 0){
+      currentPage = document.createElement('div');
+      currentPage.className = 'qr-page';
+      grid.appendChild(currentPage);
+    }
 
     const cell = document.createElement('div');
     cell.className = 'qr-cell';
@@ -760,7 +771,7 @@ function generateQrGrid(){
     const label = document.createElement('div');
     label.innerHTML = '<div class="qname">'+name+'</div><div class="qprice">'+sku+' &middot; '+money(price)+'</div>';
     cell.appendChild(label);
-    grid.appendChild(cell);
+    currentPage.appendChild(cell);
 
     new QRCode(qrHolder, { text: payload, width: 240, height: 240, correctLevel: QRCode.CorrectLevel.H });
     stampAlzBadge(qrHolder);
