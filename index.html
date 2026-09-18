@@ -274,6 +274,7 @@ Wool Mittens, 25.00</textarea>
       <input id="scriptUrl" type="url">
       <small class="hint">See setup instructions in chat. Leave blank to use the built-in sheet, or paste a different URL to override it, then it saves automatically.</small>
       <button id="btnTestConnection" class="btn btn-outline" style="margin-top:10px;">Test Connection</button>
+      <button id="btnUseDefault" class="btn btn-outline">Clear Override &amp; Use Built-in Sheet</button>
 
       <label>Next invoice number</label>
       <input id="nextInvoice" type="number" min="1">
@@ -626,6 +627,12 @@ document.getElementById('btnTestConnection').addEventListener('click', ()=>{
     .catch(() => {
       toast('Could not reach that URL \u2014 double check it and redeploy if needed');
     });
+});
+document.getElementById('btnUseDefault').addEventListener('click', ()=>{
+  localStorage.removeItem('posScriptUrl');
+  scriptUrlInput.value = '';
+  refreshSyncStatusLabel();
+  toast('Override cleared \u2014 now using the built-in sheet');
 });
 
 const nextInvoiceInput = document.getElementById('nextInvoice');
@@ -952,6 +959,7 @@ Wool Mittens, 25.00</textarea>
       <input id="scriptUrl" type="url">
       <small class="hint">See setup instructions in chat. Leave blank to use the built-in sheet, or paste a different URL to override it, then it saves automatically.</small>
       <button id="btnTestConnection" class="btn btn-outline" style="margin-top:10px;">Test Connection</button>
+      <button id="btnUseDefault" class="btn btn-outline">Clear Override &amp; Use Built-in Sheet</button>
 
       <label>Next invoice number</label>
       <input id="nextInvoice" type="number" min="1">
@@ -1304,6 +1312,12 @@ document.getElementById('btnTestConnection').addEventListener('click', ()=>{
     .catch(() => {
       toast('Could not reach that URL \u2014 double check it and redeploy if needed');
     });
+});
+document.getElementById('btnUseDefault').addEventListener('click', ()=>{
+  localStorage.removeItem('posScriptUrl');
+  scriptUrlInput.value = '';
+  refreshSyncStatusLabel();
+  toast('Override cleared \u2014 now using the built-in sheet');
 });
 
 const nextInvoiceInput = document.getElementById('nextInvoice');
