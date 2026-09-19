@@ -145,6 +145,18 @@
   .line-item .rm{
     background:none; border:none; color:var(--danger); font-size:16px; margin-left:8px; cursor:pointer; padding:2px 6px;
   }
+  .qty-control{
+    display:flex; align-items:center; gap:4px; margin-top:4px;
+  }
+  .qty-control .qty-btn{
+    width:26px; height:26px; border-radius:6px; border:1.5px solid var(--primary);
+    background:#fff; color:var(--primary); font-size:15px; font-weight:700; line-height:1;
+    cursor:pointer; padding:0;
+  }
+  .qty-control .qty-input{
+    width:40px; text-align:center; padding:4px 2px; font-size:13px;
+    font-family:'IBM Plex Mono',monospace; border:1px solid var(--line); border-radius:6px;
+  }
   .total-row{
     display:flex; justify-content:space-between;
     font-family:'IBM Plex Mono',monospace;
@@ -253,6 +265,8 @@
         <input id="manualName" type="text" placeholder="e.g. Bake Sale Cookie">
         <label>Price</label>
         <input id="manualPrice" type="number" step="0.01" min="0" placeholder="0.00">
+        <label>Quantity</label>
+        <input id="manualQty" type="number" step="1" min="1" value="1">
         <button id="btnManualAdd" class="btn btn-accent" style="margin-top:14px;">Add to Sale</button>
         <button id="btnManualCancel" class="btn btn-outline" style="margin-bottom:0;">Cancel</button>
       </div>
@@ -390,16 +404,29 @@ document.querySelectorAll('nav button').forEach(btn=>{
 });
 
 /* ---------- Cart ---------- */
-function addToCart(sku, name, price){
-  const existing = cart.find(i=>i.sku===sku);
-  if (existing){ existing.qty += 1; }
-  else { cart.push({sku, name, price:Number(price), qty:1}); }
+function addToCart(sku, name, price, qty=1){
+  const existing = cart.find(i => i.sku===sku && (sku !== 'MANUAL' || i.name === name));
+  if (existing){ existing.qty += qty; }
+  else { cart.push({sku, name, price:Number(price), qty:qty}); }
   renderCart();
   beep();
-  toast('Added: ' + name + ' (' + money(price) + ')');
+  toast('Added: ' + qty + ' x ' + name + ' (' + money(price) + ' each)');
 }
 function removeFromCart(idx){
   cart.splice(idx,1);
+  renderCart();
+}
+function adjustQty(idx, delta){
+  const item = cart[idx];
+  if (!item) return;
+  item.qty = Math.max(1, item.qty + delta);
+  renderCart();
+}
+function setQty(idx, value){
+  const item = cart[idx];
+  if (!item) return;
+  const q = parseInt(value, 10);
+  item.qty = (!isNaN(q) && q > 0) ? q : 1;
   renderCart();
 }
 function renderCart(){
@@ -412,7 +439,13 @@ function renderCart(){
       <div class="line-item">
         <div>
           <div class="name">${i.name}</div>
-          <div class="meta">${i.sku} &middot; qty ${i.qty} &times; ${money(i.price)}</div>
+          <div class="meta">${i.sku} &middot; ${money(i.price)} each</div>
+          <div class="qty-control">
+            <button class="qty-btn" onclick="adjustQty(${idx},-1)">&minus;</button>
+            <input class="qty-input" type="number" min="1" step="1" value="${i.qty}"
+              onchange="setQty(${idx}, this.value)">
+            <button class="qty-btn" onclick="adjustQty(${idx},1)">+</button>
+          </div>
         </div>
         <div style="display:flex;align-items:center;">
           <span class="price">${money(i.price*i.qty)}</span>
@@ -455,6 +488,7 @@ const manualModal = document.getElementById('manualModal');
 document.getElementById('btnAddManual').addEventListener('click', ()=>{
   document.getElementById('manualName').value = '';
   document.getElementById('manualPrice').value = '';
+  document.getElementById('manualQty').value = '1';
   manualModal.style.display = 'flex';
   document.getElementById('manualName').focus();
 });
@@ -464,9 +498,10 @@ document.getElementById('btnManualCancel').addEventListener('click', ()=>{
 document.getElementById('btnManualAdd').addEventListener('click', ()=>{
   const name = document.getElementById('manualName').value.trim();
   const price = parseFloat(document.getElementById('manualPrice').value);
+  const qty = parseInt(document.getElementById('manualQty').value, 10);
   if (!name){ toast('Enter an item name'); return; }
   if (isNaN(price)){ toast('Enter a valid price'); return; }
-  addToCart('MANUAL', name, price);
+  addToCart('MANUAL', name, price, (!isNaN(qty) && qty > 0) ? qty : 1);
   manualModal.style.display = 'none';
 });
 
@@ -495,7 +530,7 @@ function stopScanner(){
 }
 function onScanSuccess(decodedText){
   const now = Date.now();
-  if (decodedText === lastScan.code && (now - lastScan.time) < 5000) return;
+  if (decodedText === lastScan.code && (now - lastScan.time) < 3000) return;
   lastScan = { code: decodedText, time: now };
   try{
     const data = JSON.parse(decodedText);
@@ -595,16 +630,25 @@ document.getElementById('btnEmailCsv').addEventListener('click', ()=>{
   if (!url || url === "PASTE_YOUR_DEPLOYED_WEB_APP_URL_HERE"){ toast('Add your Google Sheet script URL first'); return; }
   localStorage.setItem('posEmailAddress', email);
   const csv = buildCsvString();
+  toast('Sending...');
   fetch(url, {
     method: 'POST',
-    mode: 'no-cors',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     body: JSON.stringify({ action: 'email_csv', email: email, csv: csv })
-  }).then(()=>{
-    toast('CSV sent to ' + email);
-  }).catch(()=>{
-    toast('Could not reach the script to send the email');
-  });
+  })
+    .then(res => res.text())
+    .then(text => {
+      let ok = false;
+      try { ok = JSON.parse(text).status === 'ok'; } catch(e){}
+      if (ok){
+        toast('CSV sent to ' + email);
+      } else {
+        toast('Script did not confirm the email sent \u2014 check the Apps Script logs/authorization');
+      }
+    })
+    .catch(() => {
+      toast('Could not confirm the email sent \u2014 check your script URL, deployment, and authorization');
+    });
 });
 armDangerButton(
   document.getElementById('btnClearBackup'),
