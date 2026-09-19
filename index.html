@@ -495,7 +495,7 @@ function stopScanner(){
 }
 function onScanSuccess(decodedText){
   const now = Date.now();
-  if (decodedText === lastScan.code && (now - lastScan.time) < 1500) return;
+  if (decodedText === lastScan.code && (now - lastScan.time) < 5000) return;
   lastScan = { code: decodedText, time: now };
   try{
     const data = JSON.parse(decodedText);
